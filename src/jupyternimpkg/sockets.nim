@@ -1,5 +1,6 @@
-import zmq, json, os, osproc, strutils, base64, streams, tables, options
-import ./messages, ./utils, ./display
+import std/[json, os, osproc, strutils, base64, streams, tables, options]
+import ./nimConfigs, ./messages, ./utils, ./display
+import zmq
 
 type
   Heartbeat* = object
@@ -18,6 +19,7 @@ type
     codeserver : Process # the codeserver process, needs to stay alive as long as we need to compile stuff
     servercode: string #code to build codeserver in hcr
     executingCellId: string # id of the executing cell id
+    nimConfig: NimConfig
 
   Control* = object
     socket*: ZConnection
@@ -153,7 +155,7 @@ proc updateCodeServer(shell: var Shell, firstInit=false): tuple[output: string, 
     const file = "codecells.nim"
   result = execCmdEx(r"nim c " & flatten(flags) & flatten(requiredFlags) & escape(jnTempDir / JNfile & file)) # compile the codeserver
 
-proc createShell*(ip: string, shellport: BiggestInt, pub: IOPub): Shell =
+proc createShell*(nimConfig: NimConfig, ip: string, shellport: BiggestInt, pub: IOPub): Shell =
   ## Create a shell socket
   #debug "shell at ", ip, " ", shellport
 
@@ -168,6 +170,7 @@ proc createShell*(ip: string, shellport: BiggestInt, pub: IOPub): Shell =
     result.servercode = codeserver % [JNfile & "codecells"] # fill in codecells filaname
   # flags
 
+  result.nimConfig = nimConfig
   result.socket = zmq.listen("tcp://" & ip & ":" & $shellport, zmq.ROUTER)
   result.pub = pub
   # add the import to the codecells of shell,
@@ -180,7 +183,7 @@ proc createShell*(ip: string, shellport: BiggestInt, pub: IOPub): Shell =
     result.codeserver = result.startCodeServer()
 
 proc handleKernelInfo(s: Shell, m: WireMessage) =
-  s.sendMsg( kernelInfoMsg(m) )
+  s.sendMsg( kernelInfoMsg(m, s.nimConfig.nimVersion) )
 
 const MagicsStrings = ["#>flags", "#>clear all"]
 #[TODO: find an efficient way to do the following

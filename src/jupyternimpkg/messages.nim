@@ -1,5 +1,5 @@
-import json, options, osproc, strutils
-import hmac, nimSHA2, regex
+import std/[json, options, strutils]
+import hmac, nimSHA2
 import ./utils
 
 
@@ -184,15 +184,7 @@ proc setupMsg(msg: var WireMessage, kind: WireType,
     echo "IDENT EMPTY: please report this on github.com/stisa/jupyternim"
   #sign?
 
-proc parseNimVersion*(): string =
-  let text = execCmdEx("nim -v").output.splitLines[0]
-  var m: RegexMatch
-  if match(text, re".+ Version ([^\s]+).*", m):
-    result = m.group(0, text)[0]
-  else:
-    result = NimVersion
-
-proc kernelInfoMsg*(parent: WireMessage): ShellMsg =
+proc kernelInfoMsg*(parent: WireMessage, nimVersion: string): ShellMsg =
   result.setupMsg(kernel_info_reply, parent.some)
 
   result.content = %* {
@@ -201,13 +193,13 @@ proc kernelInfoMsg*(parent: WireMessage): ShellMsg =
     "implementation_version": JNKernelVersion,
     "language_info": {
       "name": "nim",
-      "version": parseNimVersion(),
+      "version": nimVersion,
       "mimetype": "text/x-nim",
       "file_extension": ".nim",
     },
     "banner": ""
   }
-  
+
 proc replyErrorMsg*(exec_count: int, errname, errvalue: string,
               tracebacks: seq[string]= @[],
               parent: WireMessage): ShellMsg =
@@ -233,6 +225,7 @@ proc replyErrorMsg*(forMsg:WireType, errname, errvalue: string,
     "evalue": errvalue,
     "traceback": tracebacks
   }
+
 
 proc execResultMsg*( count: int, data: string, # or JsonNode?
                     parent: Option[WireMessage]=none(WireMessage)): ShellMsg =

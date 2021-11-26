@@ -1,15 +1,10 @@
-import ./jupyternimpkg/[sockets, messages, utils]
-import os, json, strutils
+import std/[dynlib, json, options, os, osproc, sequtils, strformat, strutils, tables]
+import ./jupyternimpkg/[messages, nimConfigs, sockets, utils]
+import docopt
+from zmq import zmqdll # to check against the name nim-zmq uses
 
 when (NimMajor, NimMinor, NimPatch) > (1, 3, 5): # Changes in devel
   import std/exitprocs
-
-from osproc import execProcess
-from strutils import contains, strip
-
-import dynlib # to check for zmq
-
-from zmq import zmqdll # to check against the name nim-zmq uses
 
 ## A Jupyter Kernel for Nim.
 ##
@@ -24,6 +19,23 @@ from zmq import zmqdll # to check against the name nim-zmq uses
 ##
 ## See also the [display](./display.html) package.
 
+const doc = fmt"""
+Jupyter Nim Kernel.
+
+Usage:
+  jupyternim install [--nim=<path>] [--cfg=<path>] [--nimbleDir=<path>]
+  jupyternim run <connection-file> [--nim=<path>] [--cfg=<path>] [--nimbleDir=<path>]
+  jupyternim (-h | --help)
+  jupyternim (-v | --version)
+
+Options:
+  -h --help           Show this screen.
+  -v --version        Show version.
+  --nim=<path>        Path to Nim compiler.
+  --cfg=<path>        Path to Nim configuration file.
+  --nimbleDir=<path>  Path to the nimble directory.
+"""
+
 type Kernel = object
   ## The kernel object. Contains the sockets.
   hb: Heartbeat # The heartbeat socket object
@@ -32,24 +44,40 @@ type Kernel = object
   pub: IOPub
   sin: StdIn
   running: bool
+  nimConfig: NimConfig
 
-#debug "Running at ", getCurrentDir()
 
-proc installKernelSpec() =
+proc installKernelSpec(nimConfig: NimConfig) =
   ## Install the kernel, executed when running jupyternim directly
   # no connection file passed: assume we're registering the kernel with jupyter
   echo "[Jupyternim] Installing Jupyter Nim Kernel"
+  var args = newSeq[string]()
+  if nimConfig.bin.isSome:
+    args.add("--nim:" & nimConfig.nim)
+  if nimConfig.nimbleDir.isSome:
+    args.add("--nimbleDir:" & nimConfig.nimbleDir.get)
+  args.insert(["path", "jupyternim"], args.len)
+
   # TODO: assume this can fail, check exitcode
-  var pkgDir = execProcess("nimble path jupyternim").strip().splitLines()[^1]
+  var pkgDir = execProcess("nimble", args=args, options={poStdErrToStdOut, poUsePath}).strip().splitLines()[^1]
   var (h, t) = pkgDir.splitPath()
 
   var pathToJN = (if t == "src": h else: pkgDir) /
       "jupyternim" # move jupyternim to a const string in common.nim
   pathToJN = pathToJN.changeFileExt(ExeExt)
 
+  var argv = @[pathToJN, "run"]
+  if nimConfig.bin.isSome:
+    argv.insert(@["--nim=", nimConfig.bin.get], argv.len)
+  if nimConfig.cfg.isSome:
+    argv.insert(@["--cfg=", nimConfig.cfg.get], argv.len)
+  if nimConfig.nimbleDir.isSome:
+    argv.insert(@["--nimbleDir=", nimConfig.nimbleDir.get], argv.len)
+  argv.add("{connection_file}")
+
   let kernelspec = %*{
-    "argv": [pathToJN, "{connection_file}"],
-    "display_name": "Nim",
+    "argv": argv,
+    "display_name": "Nim " & nimConfig.nimVersion,
     "language": "nim",
     "file_extension": ".nim"}
 
@@ -83,7 +111,7 @@ proc installKernelSpec() =
 
   quit(0)
 
-proc initKernel(connfile: string): Kernel =
+proc initKernel(connfile: string, nimConfig: NimConfig): Kernel =
   when defined useHcr:
     echo "[Jupyternim] You're running jupyternim with hotcodereloading:on, it is **very** unstable"
     echo "[Jupyternim] Please report any issues to https://github.com/stisa/jupyternim"
@@ -97,9 +125,10 @@ proc initKernel(connfile: string): Kernel =
     # Ensure temp folder exists
     createDir(jnTempDir)
 
+  result.nimConfig = nimConfig
   result.hb = createHB(connmsg.ip, connmsg.hb_port) # Initialize the heartbeat socket
   result.pub = createIOPub(connmsg.ip, connmsg.iopub_port) # Initialize iopub
-  result.shell = createShell(connmsg.ip, connmsg.shell_port,
+  result.shell = createShell(nimConfig, connmsg.ip, connmsg.shell_port,
       result.pub) # Initialize shell
   result.control = createControl(connmsg.ip, connmsg.control_port) # Initialize control
   result.sin = createStdIn(connmsg.ip, connmsg.stdin_port) # Initialize stdin
@@ -153,10 +182,10 @@ proc shutdown(k: var Kernel) {.noconv.} =
           echo "[Jupyternim] failed to delete ", f.path
     debug "Cleaned up files from /.jupyternim"
 
-proc runKernel(connfile: string) =
+proc runKernel(connfile: string, nimConfig: NimConfig) =
   # Main loop: this is executed when jupyter starts the kernel
 
-  var kernel: Kernel = initKernel(connfile)
+  var kernel: Kernel = initKernel(connfile, nimConfig)
 
   when (NimMajor, NimMinor, NimPatch) > (1, 3, 5):
     addExitProc(proc() = kernel.shutdown())
@@ -166,19 +195,31 @@ proc runKernel(connfile: string) =
   kernel.loop()
 
 let arguments = commandLineParams() # [0] is ususally the connection file
-case arguments.len:
-of 0: # no args, assume we are installing the kernel
-  installKernelSpec()
-of 1:
-  if arguments[0] == "-v":
-    echo "Jupyternim ", if defined debug: "debug " else: "", "version: ", JNKernelVersion
-    echo "  hcr enabled: ", defined(useHcr)
-  elif arguments[0][^4..^1] == "json": # TODO: file splitFile bug with C:\Users\stisa\AppData\Roaming\jupyter\runtime\kernel-9f74a25e-d932-4212-98ae-693f8d18ed55.json
-    runKernel(arguments[0])
+if arguments.len > 1 and arguments[0][^2..^1] == "py":
+  # vscode-python shenanigans
+  quit(1)
+
+let args = docopt(doc, version = "Jupyter Nim " & JNKernelVersion)
+let nimConfig = createNimConfigFromArgs(args)
+
+if args["install"]:
+  installKernelSpec(nimConfig)
+elif args["run"]:
+  if args["<connection-file>"].kind == vkStr:
+    let connectionFile = $(args["<connection-file>"])
+    echo "connectionFile=" & connectionFile
+    echo "connectionFile[^4..^1]=" & $connectionFile[^4..^1]
+    if connectionFile[^4..^1] == "json":
+      runKernel(connectionFile, nimConfig)
+    else:
+      echo "Error: unrecognized single argument: ", connectionFile
+      quit(1)
   else:
-    echo "Unrecognized single argument: ", arguments[0]
+    echo "Error: connection file path required"
+    quit(1)
 else:
-  echo "More than expected arguments: ", $arguments
-  if arguments[0][^2..^1] == "py": quit(1) # vscode-python shenanigans
+  echo "Unknown command"
+  echo(doc.strip())
+  quit(1)
 
 quit(0)
