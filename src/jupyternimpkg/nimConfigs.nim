@@ -1,13 +1,11 @@
 
 import std/[options, osproc, strutils, tables]
-import docopt, regex
+import docopt
 
 type NimConfig* = object
   bin*: Option[string]  # Path to Nim compiler.
   cfg*: Option[string]  # Path to Nim configuration file.
   nimbleDir*: Option[string] # Path to the Nimble directory.
-
-type UnknownNimVersionDefect* = object of Defect
 
 proc createNimConfig*(bin, cfg, nimbleDir: Option[string]): NimConfig =
   result.bin = bin
@@ -33,10 +31,5 @@ proc nim*(nimConfig: NimConfig): string =
   result = if nimConfig.bin.isSome: nimConfig.bin.get
     else: "nim"
 
-proc nimVersion*(nimConfig: NimConfig): string {.raises: [Exception, UnknownNimVersionDefect].} =
-  let text = execProcess(nimConfig.nim & " -v").splitLines[0]
-  var m: RegexMatch
-  if match(text, re".+ Version ([^\s]+).*", m):
-    result = m.group(0, text)[0]
-  else:
-    raise newException(UnknownNimVersionDefect, "Could not parse Nim version from " & nimConfig.nim & " output: " & text)
+proc nimVersion*(nimConfig: NimConfig): string =
+  result = execCmdEx(nimConfig.nim & " -v").output.splitLines[0].split("Version")[1].split(" ")[1]
