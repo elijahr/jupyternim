@@ -28,7 +28,7 @@ after install:
     # uses /bin/sh so running jupyternim from NimScript will fail to find
     # libzmq.dylib.
     echo "\nTo install Jupyter Nim kernel, run:\n"
-    echo "  jupyternim\n"
+    echo "  jupyternim install\n"
   else:
     var jnpath = gorgeEx("nimble path jupyternim")
     jnpath.output.stripLineEnd
